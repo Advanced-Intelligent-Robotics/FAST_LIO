@@ -81,6 +81,10 @@ void Preprocess::process(const sensor_msgs::PointCloud2::ConstPtr &msg, PointClo
   case MARSIM:
     sim_handler(msg);
     break;
+
+  case SICK:
+    sick_handler(msg);
+    break; 
   
   default:
     printf("Error LiDAR Type");
@@ -478,6 +482,39 @@ void Preprocess::sim_handler(const sensor_msgs::PointCloud2::ConstPtr &msg) {
         added_pt.curvature = 0.0;
         pl_surf.points.push_back(added_pt);
     }
+}
+
+void Preprocess::sick_handler(const sensor_msgs::PointCloud2::ConstPtr &msg)
+{
+  pl_surf.clear();
+  pl_full.clear();
+  pcl::PointCloud<sick_ros::Point> pl_orig;
+  pcl::fromROSMsg(*msg, pl_orig);
+  int plsize = pl_orig.size();
+  pl_surf.reserve(plsize);
+  double time_stamp = msg->header.stamp.toSec();
+  //
+  for (int i = 0; i < pl_orig.points.size(); i++)
+  {
+    if (i % point_filter_num != 0) continue;
+
+    double range = pl_orig.points[i].x * pl_orig.points[i].x + pl_orig.points[i].y * pl_orig.points[i].y + pl_orig.points[i].z * pl_orig.points[i].z;
+    
+    if (range < (blind * blind)) continue;
+    
+    Eigen::Vector3d pt_vec;
+    PointType added_pt;
+    added_pt.x = pl_orig.points[i].x;
+    added_pt.y = pl_orig.points[i].y;
+    added_pt.z = pl_orig.points[i].z;
+    added_pt.intensity = pl_orig.points[i].i;
+    added_pt.normal_x = 0;
+    added_pt.normal_y = 0;
+    added_pt.normal_z = 0;
+    added_pt.curvature = pl_orig.points[i].t * time_unit_scale; // curvature unit: ns
+
+    pl_surf.points.push_back(added_pt);
+  }
 }
 
 void Preprocess::give_feature(pcl::PointCloud<PointType> &pl, vector<orgtype> &types)
