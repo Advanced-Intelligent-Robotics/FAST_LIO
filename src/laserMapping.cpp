@@ -59,6 +59,7 @@
 #include <livox_ros_driver/CustomMsg.h>
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
+#include "odomHelper.h"
 
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
@@ -139,6 +140,13 @@ geometry_msgs::PoseStamped msg_body_pose;
 
 shared_ptr<Preprocess> p_pre(new Preprocess());
 shared_ptr<ImuProcess> p_imu(new ImuProcess());
+shared_ptr<OdomHelper> p_odom(new OdomHelper());
+
+// egocentric estimation related variable
+std::string odom_frame;
+std::string lidar_frame;
+std::string base_frame;
+bool egocentric_estimation;
 
 void SigHandle(int sig)
 {
@@ -493,7 +501,7 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
         sensor_msgs::PointCloud2 laserCloudmsg;
         pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
         laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
-        laserCloudmsg.header.frame_id = "camera_init";
+        laserCloudmsg.header.frame_id = (egocentric_estimation)? odom_frame :"camera_init";
         pubLaserCloudFull.publish(laserCloudmsg);
         publish_count -= PUBFRAME_PERIOD;
     }
@@ -543,7 +551,7 @@ void publish_frame_body(const ros::Publisher & pubLaserCloudFull_body)
     sensor_msgs::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*laserCloudIMUBody, laserCloudmsg);
     laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
-    laserCloudmsg.header.frame_id = "body";
+    laserCloudmsg.header.frame_id = (egocentric_estimation)? base_frame :"body";
     pubLaserCloudFull_body.publish(laserCloudmsg);
     publish_count -= PUBFRAME_PERIOD;
 }
@@ -560,7 +568,7 @@ void publish_effect_world(const ros::Publisher & pubLaserCloudEffect)
     sensor_msgs::PointCloud2 laserCloudFullRes3;
     pcl::toROSMsg(*laserCloudWorld, laserCloudFullRes3);
     laserCloudFullRes3.header.stamp = ros::Time().fromSec(lidar_end_time);
-    laserCloudFullRes3.header.frame_id = "camera_init";
+    laserCloudFullRes3.header.frame_id = (egocentric_estimation)? odom_frame :"camera_init";
     pubLaserCloudEffect.publish(laserCloudFullRes3);
 }
 
@@ -569,7 +577,7 @@ void publish_map(const ros::Publisher & pubLaserCloudMap)
     sensor_msgs::PointCloud2 laserCloudMap;
     pcl::toROSMsg(*featsFromMap, laserCloudMap);
     laserCloudMap.header.stamp = ros::Time().fromSec(lidar_end_time);
-    laserCloudMap.header.frame_id = "camera_init";
+    laserCloudMap.header.frame_id = (egocentric_estimation)? odom_frame :"camera_init";
     pubLaserCloudMap.publish(laserCloudMap);
 }
 
@@ -588,11 +596,44 @@ void set_posestamp(T & out)
 
 void publish_odometry(const ros::Publisher & pubOdomAftMapped)
 {
-    odomAftMapped.header.frame_id = "camera_init";
-    odomAftMapped.child_frame_id = "body";
+    odomAftMapped.header.frame_id = (egocentric_estimation)? odom_frame :"camera_init";
+    odomAftMapped.child_frame_id = (egocentric_estimation)? base_frame :"body";
     odomAftMapped.header.stamp = ros::Time().fromSec(lidar_end_time);// ros::Time().fromSec(lidar_end_time);
     set_posestamp(odomAftMapped.pose);
-    pubOdomAftMapped.publish(odomAftMapped);
+    if(!egocentric_estimation){
+        pubOdomAftMapped.publish(odomAftMapped);
+        static tf::TransformBroadcaster br;
+        tf::Transform                   transform;
+        tf::Quaternion                  q;
+        transform.setOrigin(tf::Vector3(odomAftMapped.pose.pose.position.x, \
+                                        odomAftMapped.pose.pose.position.y, \
+                                        odomAftMapped.pose.pose.position.z));
+        q.setW(odomAftMapped.pose.pose.orientation.w);
+        q.setX(odomAftMapped.pose.pose.orientation.x);
+        q.setY(odomAftMapped.pose.pose.orientation.y);
+        q.setZ(odomAftMapped.pose.pose.orientation.z);
+        transform.setRotation( q );
+        br.sendTransform( tf::StampedTransform( transform, odomAftMapped.header.stamp, "camera_init", "body" ) );
+    } 
+    else{
+        nav_msgs::Odometry ego_odom;
+        auto res = p_odom->estimateEgocentric(odomAftMapped,ego_odom);
+        if(res){
+            pubOdomAftMapped.publish(ego_odom);
+            static tf::TransformBroadcaster ego_br;
+            tf::Transform                   ego_transform;
+            tf::Quaternion                  ego_q;
+            ego_transform.setOrigin(tf::Vector3(ego_odom.pose.pose.position.x, \
+                                            ego_odom.pose.pose.position.y, \
+                                            ego_odom.pose.pose.position.z));
+            ego_q.setW(ego_odom.pose.pose.orientation.w);
+            ego_q.setX(ego_odom.pose.pose.orientation.x);
+            ego_q.setY(ego_odom.pose.pose.orientation.y);
+            ego_q.setZ(ego_odom.pose.pose.orientation.z);
+            ego_transform.setRotation( ego_q );
+            ego_br.sendTransform( tf::StampedTransform( ego_transform, ego_odom.header.stamp, ego_odom.header.frame_id, ego_odom.child_frame_id ) ); 
+        }
+    }
     auto P = kf.get_P();
     for (int i = 0; i < 6; i ++)
     {
@@ -604,26 +645,13 @@ void publish_odometry(const ros::Publisher & pubOdomAftMapped)
         odomAftMapped.pose.covariance[i*6 + 4] = P(k, 1);
         odomAftMapped.pose.covariance[i*6 + 5] = P(k, 2);
     }
-
-    static tf::TransformBroadcaster br;
-    tf::Transform                   transform;
-    tf::Quaternion                  q;
-    transform.setOrigin(tf::Vector3(odomAftMapped.pose.pose.position.x, \
-                                    odomAftMapped.pose.pose.position.y, \
-                                    odomAftMapped.pose.pose.position.z));
-    q.setW(odomAftMapped.pose.pose.orientation.w);
-    q.setX(odomAftMapped.pose.pose.orientation.x);
-    q.setY(odomAftMapped.pose.pose.orientation.y);
-    q.setZ(odomAftMapped.pose.pose.orientation.z);
-    transform.setRotation( q );
-    br.sendTransform( tf::StampedTransform( transform, odomAftMapped.header.stamp, "camera_init", "body" ) );
 }
 
 void publish_path(const ros::Publisher pubPath)
 {
     set_posestamp(msg_body_pose);
     msg_body_pose.header.stamp = ros::Time().fromSec(lidar_end_time);
-    msg_body_pose.header.frame_id = "camera_init";
+    msg_body_pose.header.frame_id = (egocentric_estimation)? odom_frame :"camera_init";
 
     /*** if path is too large, the rvis will crash ***/
     static int jjj = 0;
@@ -791,12 +819,18 @@ int main(int argc, char** argv)
     nh.param<int>("pcd_save/interval", pcd_save_interval, -1);
     nh.param<vector<double>>("mapping/extrinsic_T", extrinT, vector<double>());
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
+    nh.param<bool>("egocentric_estimation",egocentric_estimation,true);
+    nh.param<std::string>("odom_frame",odom_frame,"odom");
+    nh.param<std::string>("lidar_frame",lidar_frame,"lidar");
+    nh.param<std::string>("base_frame",base_frame,"base_footprint");
 
+    ROS_INFO_STREAM("odom: "<<odom_frame << " lidar: " << lidar_frame<< " base: "<< base_frame);
+    p_odom->init(odom_frame,lidar_frame,base_frame);
     p_pre->lidar_type = lidar_type;
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
     
     path.header.stamp    = ros::Time::now();
-    path.header.frame_id ="camera_init";
+    path.header.frame_id =(egocentric_estimation)? odom_frame :"camera_init";
 
     /*** variables definition ***/
     int effect_feat_num = 0, frame_num = 0;
