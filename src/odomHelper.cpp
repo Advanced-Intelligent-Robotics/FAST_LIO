@@ -7,14 +7,26 @@ OdomHelper::~OdomHelper(){
   ROS_INFO("Odom Helper Destructor");
 }
 
-void OdomHelper::init(std::string odom_frame, std::string lidar_frame, std::string base_frame){
+void OdomHelper::init(std::string odom_frame, std::string imu_frame, std::string base_frame){
   ROS_INFO("Initializing Odom Helper");
   odom_frame_ = odom_frame;
   base_frame_ = base_frame;
-  lidar_frame_ = lidar_frame;
+  imu_frame_ = imu_frame;
   // initialize tf_listener
   tfBuffer_ = boost::make_shared<tf2_ros::Buffer>();
   tf_listener_ = boost::make_shared<tf2_ros::TransformListener>(*tfBuffer_);
+}
+
+bool OdomHelper::getTransformStamped(std::string target_frame, std::string source_frame, geometry_msgs::TransformStamped& transformStamped){
+  try{
+    // 1. Get transformation from base_footprint -> lidar
+    transformStamped = tfBuffer_->lookupTransform(target_frame,source_frame,ros::Time(0)); // Lookup tf for base -> lidar
+    return true;
+  }
+  catch (tf2::TransformException &ex) {
+    ROS_WARN("Could not compute transformation: %s", ex.what());
+    return false;
+  }
 }
 
 bool OdomHelper::estimateEgocentric(const nav_msgs::Odometry& odom_in, nav_msgs::Odometry& odom_out){
@@ -22,7 +34,7 @@ bool OdomHelper::estimateEgocentric(const nav_msgs::Odometry& odom_in, nav_msgs:
     // 1. Get transformation from base_footprint -> lidar
     geometry_msgs::TransformStamped base_to_lidar;
     tf2::Transform tf_base_to_lidar;
-    base_to_lidar = tfBuffer_->lookupTransform(lidar_frame_,base_frame_,ros::Time(0)); // Lookup tf for base -> lidar
+    base_to_lidar = tfBuffer_->lookupTransform(imu_frame_,base_frame_,ros::Time(0)); // Lookup tf for base -> lidar
     tf2::fromMsg(base_to_lidar.transform,tf_base_to_lidar); // convert to tf2::Transform
 
     // 2. 
@@ -30,7 +42,7 @@ bool OdomHelper::estimateEgocentric(const nav_msgs::Odometry& odom_in, nav_msgs:
     tf2::Transform tf_odom_to_lidar;
     odom_to_lidar.header.stamp = odom_in.header.stamp;
     odom_to_lidar.header.frame_id = odom_frame_;           // Parent frame
-    odom_to_lidar.child_frame_id = lidar_frame_;  // Child frame (could be base_link or another)
+    odom_to_lidar.child_frame_id = imu_frame_;  // Child frame (could be base_link or another)
     odom_to_lidar.transform.translation.x = odom_in.pose.pose.position.x;
     odom_to_lidar.transform.translation.y = odom_in.pose.pose.position.y;
     odom_to_lidar.transform.translation.z = odom_in.pose.pose.position.z;

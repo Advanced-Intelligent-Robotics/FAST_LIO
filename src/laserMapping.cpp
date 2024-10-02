@@ -60,6 +60,8 @@
 #include "preprocess.h"
 #include <ikd-Tree/ikd_Tree.h>
 #include "odomHelper.h"
+#include <pcl_ros/transforms.h>
+#include <pcl_ros/point_cloud.h>
 
 #define INIT_TIME           (0.1)
 #define LASER_POINT_COV     (0.001)
@@ -144,7 +146,7 @@ shared_ptr<OdomHelper> p_odom(new OdomHelper());
 
 // egocentric estimation related variable
 std::string odom_frame;
-std::string lidar_frame;
+std::string imu_frame;
 std::string base_frame;
 bool egocentric_estimation;
 
@@ -497,13 +499,28 @@ void publish_frame_world(const ros::Publisher & pubLaserCloudFull)
             RGBpointBodyToWorld(&laserCloudFullRes->points[i], \
                                 &laserCloudWorld->points[i]);
         }
-
-        sensor_msgs::PointCloud2 laserCloudmsg;
-        pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
-        laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
-        laserCloudmsg.header.frame_id = (egocentric_estimation)? odom_frame :"camera_init";
-        pubLaserCloudFull.publish(laserCloudmsg);
-        publish_count -= PUBFRAME_PERIOD;
+        if(!egocentric_estimation){
+            sensor_msgs::PointCloud2 laserCloudmsg;
+            pcl::toROSMsg(*laserCloudWorld, laserCloudmsg);
+            laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
+            laserCloudmsg.header.frame_id = "camera_init";
+            pubLaserCloudFull.publish(laserCloudmsg);
+            publish_count -= PUBFRAME_PERIOD;
+        }
+        else{
+            geometry_msgs::TransformStamped transform;
+            if(!p_odom->getTransformStamped(base_frame,imu_frame,transform)){
+                return;
+            }
+            PointCloudXYZI::Ptr transformed_cloud_(new PointCloudXYZI());
+            pcl_ros::transformPointCloud(*laserCloudWorld,*transformed_cloud_,transform.transform);
+            sensor_msgs::PointCloud2 laserCloudmsg;
+            pcl::toROSMsg(*transformed_cloud_, laserCloudmsg);
+            laserCloudmsg.header.stamp = ros::Time().fromSec(lidar_end_time);
+            laserCloudmsg.header.frame_id = odom_frame;
+            pubLaserCloudFull.publish(laserCloudmsg);
+            publish_count -= PUBFRAME_PERIOD;
+        }
     }
 
     /**************** save map ****************/
@@ -821,11 +838,11 @@ int main(int argc, char** argv)
     nh.param<vector<double>>("mapping/extrinsic_R", extrinR, vector<double>());
     nh.param<bool>("egocentric_estimation",egocentric_estimation,true);
     nh.param<std::string>("odom_frame",odom_frame,"odom");
-    nh.param<std::string>("lidar_frame",lidar_frame,"lidar");
+    nh.param<std::string>("imu_frame",imu_frame,"lidar");
     nh.param<std::string>("base_frame",base_frame,"base_footprint");
 
-    ROS_INFO_STREAM("odom: "<<odom_frame << " lidar: " << lidar_frame<< " base: "<< base_frame);
-    p_odom->init(odom_frame,lidar_frame,base_frame);
+    ROS_INFO_STREAM("odom: "<<odom_frame << " lidar: " << imu_frame<< " base: "<< base_frame);
+    p_odom->init(odom_frame,imu_frame,base_frame);
     p_pre->lidar_type = lidar_type;
     cout<<"p_pre->lidar_type "<<p_pre->lidar_type<<endl;
     
